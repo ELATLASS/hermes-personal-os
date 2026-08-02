@@ -1,0 +1,15 @@
+[project]
+name = "Hermes-Personal-OS"
+version = "4.0.0"
+description = "Agent autonome d'ingénierie et d'automatisation interconnecté avec Notion Personal OS, Telegram et GitHub Actions."
+python = "^3.11"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+notion-client = "^2.0.0"
+python-telegram-bot = "^20.0"
+beautifulsoup4 = "^4.12.0"
+requests = "^2.31.0"
+
+[tool.poetry.scripts]
+hermes-os = "main:main"

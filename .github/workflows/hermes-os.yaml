@@ -1,0 +1,99 @@
+name: Hermes-Personal-OS
+
+on:
+  schedule:
+    # Daily at 07:00 UTC — triggers the cron skill run
+    - cron: '0 7 * * *'
+  repository_dispatch:
+    # On-demand trigger via webhook event_type
+    types: [trigger-hermes-instant]
+  workflow_dispatch:
+    # Manual trigger from GitHub UI / mobile app
+    inputs:
+      skill_to_run:
+        description: 'Optional: run a specific skill (job_hunter_auto, leboncoin_reviewer, instagram_planner, zero_waste_nutrition)'
+        required: false
+        default: 'all'
+      dry_run:
+        description: 'Run in simulation mode (no external actions)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  run-hermes-os:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ──────────────────────────────────────────────────────────────
+      # 1. Checkout repository
+      # ──────────────────────────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ──────────────────────────────────────────────────────────────
+      # 2. Set up Python 3.11
+      # ──────────────────────────────────────────────────────────────
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # ──────────────────────────────────────────────────────────────
+      # 3. Install dependencies
+      # ──────────────────────────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          # Install Notion (notion-client) and Telegram (python-telegram-bot) libs
+
+      # ──────────────────────────────────────────────────────────────
+      # 4. Configure environment secrets (masked in logs)
+      # ──────────────────────────────────────────────────────────────
+      - name: Set environment variables
+        run: |
+          echo "NOTION_TOKEN=${{ secrets.NOTION_TOKEN }}" >> $GITHUB_ENV
+          echo "NOTION_JOB_DB_ID=${{ secrets.NOTION_JOB_DB_ID }}" >> $GITHUB_ENV
+          echo "NOTION_LBC_DB_ID=${{ secrets.NOTION_LBC_DB_ID }}" >> $GITHUB_ENV
+          echo "NOTION_LOGS_DB_ID=${{ secrets.NOTION_LOGS_DB_ID }}" >> $GITHUB_ENV
+          echo "TELEGRAM_BOT_TOKEN=${{ secrets.TELEGRAM_BOT_TOKEN }}" >> $GITHUB_ENV
+          echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" >> $GITHUB_ENV
+          echo "DRY_RUN=${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_ENV
+          echo "SKILL_TO_RUN=${{ github.event.inputs.skill_to_run || 'all' }}" >> $GITHUB_ENV
+
+      # ──────────────────────────────────────────────────────────────
+      # 5. Run the Hermes-Personal-OS orchestration
+      # ──────────────────────────────────────────────────────────────
+      - name: Run Hermes-Personal-OS
+        run: python -m main --run-all || { echo "::error::Hermes-Personal-OS failed, checking alert channel"; exit 1; }
+        env:
+          # Retry policy is applied at the skill level; this step fails fast so
+          # the failure is visible in the Actions UI and a Telegram alert fires.
+          MAX_ATTEMPTS: ${{ env.MAX_ATTEMPTS || 3 }}
+          BACKOFF_FACTOR: ${{ env.BACKOFF_FACTOR || 2 }}
+
+      # ──────────────────────────────────────────────────────────────
+      # 6. Upload debug logs as artifact (for debugging)
+      # ──────────────────────────────────────────────────────────────
+      - name: Upload logs artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-os-run-logs
+          path: logs/
+          retention-days: 7
+
+      # ──────────────────────────────────────────────────────────────
+      # 7. Notify Telegram on failure
+      # ──────────────────────────────────────────────────────────────
+      - name: Alert on failure
+        if: failure()
+        run: |
+          python -m telegram_bot.send_alert \
+            --text "🚨 Hermes-Personal-OS FAILED on GitHub Actions\nJob: ${{ github.job }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
