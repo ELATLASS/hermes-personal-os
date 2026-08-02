@@ -105,7 +105,15 @@ def _fetch_grid_from_notion(rows: int, cols: int) -> List[Dict]:
     try:
         from notion_client import Client
         notion = Client(auth=notion_token)
-        response = notion.databases.query(database_id=instagram_db_id)
+        # Handle both v2.x (databases.query) and v3.x (request method)
+        try:
+            response = notion.databases.query(database_id=instagram_db_id)
+        except AttributeError:
+            response = notion.request(
+                path=f"databases/{instagram_db_id}/query",
+                method="POST",
+                json={"page_size": 100}
+            ).to_dict()
         cells = []
         for page in response.get("results", []):
             props = page.get("properties", {})

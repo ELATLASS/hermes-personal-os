@@ -106,7 +106,15 @@ def _fetch_lbc_listings() -> List[Dict]:
     try:
         from notion_client import Client
         notion = Client(auth=notion_token)
-        response = notion.databases.query(database_id=lbc_db_id)
+        # Handle both v2.x (databases.query) and v3.x (request method)
+        try:
+            response = notion.databases.query(database_id=lbc_db_id)
+        except AttributeError:
+            response = notion.request(
+                path=f"databases/{lbc_db_id}/query",
+                method="POST",
+                json={"page_size": 100}
+            ).to_dict()
         listings = []
         for page in response.get("results", []):
             props = page.get("properties", {})
