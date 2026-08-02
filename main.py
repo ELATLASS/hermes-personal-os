@@ -18,13 +18,16 @@ import traceback
 from typing import Any
 from pathlib import Path
 
-# ── Logging setup ──────────────────────────────────────────────────────
+# ── Logging setup (auto-create logs dir) ───────────────────────────────
+_log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+os.makedirs(_log_dir, exist_ok=True)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("logs/hermes-os.log"),
+        logging.FileHandler(os.path.join(_log_dir, "hermes-os.log")),
     ],
 )
 logger = logging.getLogger("Hermes-Personal-OS")
