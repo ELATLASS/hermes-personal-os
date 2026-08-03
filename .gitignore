@@ -4,18 +4,34 @@ __pycache__/
 *$py.class
 *.so
 .Python
-venv/
 .venv/
+venv/
 env/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Environment secrets
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
 .env
-.env.local
 *.env
 
 # Logs
 logs/
 *.log
+
+# OS generated
+.DS_Store
+._*
 
 # IDE
 .vscode/
@@ -23,9 +39,5 @@ logs/
 *.swp
 *.swo
 
-# OS
-.DS_Store
-Thumbs.db
-
 # GitHub
-.github/workflows/  # Keep workflow but ignore for local dev safety
+.history/
