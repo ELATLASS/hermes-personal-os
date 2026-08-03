@@ -19,9 +19,21 @@ on:
         required: false
         default: 'false'
         type: boolean
+      max_attempts:
+        description: 'Max retry attempts for failed skills (default: 3)'
+        required: false
+        default: '3'
+      backoff_factor:
+        description: 'Exponential backoff base factor (default: 2)'
+        required: false
+        default: '2'
+
+permissions:
+  contents: read
 
 jobs:
   run-hermes-os:
+    name: Run Hermes-Personal-OS
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -30,25 +42,29 @@ jobs:
       # 1. Checkout repository
       # ──────────────────────────────────────────────────────────────
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@a2d1cbb0c7eab3e3e9e955f1e6e5f4a0b0c0d0e0 # v4.2.2
+        with:
+          persist-credentials: false
 
       # ──────────────────────────────────────────────────────────────
       # 2. Set up Python 3.11
       # ──────────────────────────────────────────────────────────────
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@115c4a09f4103a3c4eda0c6170dcb611e3d28 # v5.7.0
         with:
           python-version: '3.11'
           cache: 'pip'
+          cache-dependency-path: requirements.txt
 
       # ──────────────────────────────────────────────────────────────
       # 3. Install dependencies
       # ──────────────────────────────────────────────────────────────
-      - name: Install dependencies
+      - name: Create venv + Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          # Install Notion (notion-client) and Telegram (python-telegram-bot) libs
+          python -m venv .venv
+          echo ".venv" >> $GITHUB_PATH
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
 
       # ──────────────────────────────────────────────────────────────
       # 4. Configure environment secrets (masked in logs)
@@ -63,37 +79,93 @@ jobs:
           echo "TELEGRAM_CHAT_ID=${{ secrets.TELEGRAM_CHAT_ID }}" >> $GITHUB_ENV
           echo "DRY_RUN=${{ github.event.inputs.dry_run || 'false' }}" >> $GITHUB_ENV
           echo "SKILL_TO_RUN=${{ github.event.inputs.skill_to_run || 'all' }}" >> $GITHUB_ENV
+          echo "MAX_ATTEMPTS=${{ github.event.inputs.max_attempts || '3' }}" >> $GITHUB_ENV
+          echo "BACKOFF_FACTOR=${{ github.event.inputs.backoff_factor || '2' }}" >> $GITHUB_ENV
 
       # ──────────────────────────────────────────────────────────────
       # 5. Run the Hermes-Personal-OS orchestration
       # ──────────────────────────────────────────────────────────────
       - name: Run Hermes-Personal-OS
-        run: python -m main --run-all || { echo "::error::Hermes-Personal-OS failed, checking alert channel"; exit 1; }
+        id: run-hermes
+        run: |
+          mkdir -p logs
+          .venv/bin/python -m main --run-all
         env:
-          # Retry policy is applied at the skill level; this step fails fast so
-          # the failure is visible in the Actions UI and a Telegram alert fires.
-          MAX_ATTEMPTS: ${{ env.MAX_ATTEMPTS || 3 }}
-          BACKOFF_FACTOR: ${{ env.BACKOFF_FACTOR || 2 }}
+          MAX_ATTEMPTS: ${{ env.MAX_ATTEMPTS }}
+          BACKOFF_FACTOR: ${{ env.BACKOFF_FACTOR }}
+          DRY_RUN: ${{ env.DRY_RUN }}
+          SKILL_TO_RUN: ${{ env.SKILL_TO_RUN }}
 
       # ──────────────────────────────────────────────────────────────
       # 6. Upload debug logs as artifact (for debugging)
       # ──────────────────────────────────────────────────────────────
       - name: Upload logs artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: hermes-os-run-logs
           path: logs/
           retention-days: 7
+          if-no-files-found: warn
 
       # ──────────────────────────────────────────────────────────────
-      # 7. Notify Telegram on failure
+      # 7. Notify Telegram on failure (with SMTP fallback)
       # ──────────────────────────────────────────────────────────────
       - name: Alert on failure
         if: failure()
         run: |
-          python -m telegram_bot.send_alert \
-            --text "🚨 Hermes-Personal-OS FAILED on GitHub Actions\nJob: ${{ github.job }}\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          .venv/bin/python - <<'PYEOF'
+          import os, sys, json, smtplib
+          from email.mime.text import MIMEText
+
+          tb = os.getenv("TELEGRAM_BOT_TOKEN")
+          tc = os.getenv("TELEGRAM_CHAT_ID")
+          run_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+          run_url += f"/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+
+          msg = f"🚨 Hermes-Personal-OS FAILED on GitHub Actions\nJob: {os.environ.get('GITHUB_JOB', 'n/a')}\nRun: {run_url}"
+
+          if tb and tc:
+              import requests
+              try:
+                  r = requests.post(
+                      f"https://api.telegram.org/bot{tb}/sendMessage",
+                      json={"chat_id": tc, "text": msg, "parse_mode": "Markdown"},
+                      timeout=15,
+                  )
+                  if r.status_code == 200:
+                      print("✅ Telegram alert sent")
+                  else:
+                      print(f"⚠️ Telegram failed: {r.status_code} — falling back to SMTP")
+                      sys.exit(1)  # trigger SMTP fallback
+              except Exception as e:
+                  print(f"⚠️ Telegram send failed: {e} — falling back to SMTP")
+                  sys.exit(1)
+          else:
+              print("⚠️ No Telegram credentials — falling back to SMTP")
+              sys.exit(1)
+          PYEOF
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_SERVER_URL: ${{ github.server_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_JOB: ${{ github.job }}
+
+      - name: SMTP fallback alert
+        if: failure() && steps.run-hermes.outcome == 'failure'
+        uses: dawidd6/action-send-mail@de38020920cf05c97673162cc2f0d647220f11dc # v3.4.0
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          subject: 🚨 Hermes-Personal-OS FAILED
+          body: |
+            Hermes-Personal-OS failed on GitHub Actions.
+            Repository: ${{ github.repository }}
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Job: ${{ github.job }}
+          to: elatlassiabdessamad@outlook.fr
+          from: Hermes Agent <smtp-username>
